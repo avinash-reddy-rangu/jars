@@ -1,5 +1,28 @@
 import re
 
+
+def clean_formatting(text: str) -> str:
+    """
+    Cleans up common punctuation spacing issues and bullet formatting:
+    - Fixes excessive spaces after periods or commas.
+    - Converts '. -' into '.\n- ' to properly separate bullet lines.
+    - Normalizes spaced double periods '. .' into '. '.
+    """
+    # Matches periods or commas followed by 2+ spaces
+    spaced_period_pattern = re.compile(r"[.,]\s{2,}")
+    text = spaced_period_pattern.sub(". ", text)
+    
+    # Matches '. -' pattern to start a bullet properly
+    period_into_dash_pattern = re.compile(r"\.\s\-")
+    text = period_into_dash_pattern.sub(".\n- ", text)
+    
+    # Matches spaced double periods like '. .' into '. '
+    spaced_double_period_pattern = re.compile(r"\.\s\.")
+    text = spaced_double_period_pattern.sub(". ", text)
+    
+    return text
+
+
 def normalize_legal_text(text: str) -> str:
     # Split the input text into individual lines
     lines = text.splitlines()
