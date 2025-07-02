@@ -210,3 +210,58 @@ def normalize_legal_text(text: str) -> str:
 
     # Join all lines with a single \n between each
     return "\n".join(normalized_lines)
+
+
+import re
+
+def normalize_legal_text(text: str) -> str:
+    lines = text.splitlines()
+    normalized_lines = []
+    inside_list_block = False
+    last_list_indent_level = 0
+
+    for line in lines:
+        stripped = line.rstrip()
+
+        # Blank line
+        if not stripped.strip():
+            if inside_list_block:
+                # Skip blank lines inside a list block
+                continue
+            else:
+                # Keep blank lines outside list block
+                normalized_lines.append("")
+                continue
+
+        # Numbered list item (like 1. something)
+        if re.match(r'^\d+\.', stripped):
+            normalized_lines.append(stripped)
+            inside_list_block = True
+            last_list_indent_level = 0  # reset on new numbered item
+            continue
+
+        # Bullet item (like "    - item")
+        bullet_match = re.match(r'^(\s*)-\s+(.*)', line)
+        if bullet_match:
+            spaces = bullet_match.group(1)
+            content = bullet_match.group(2)
+            nesting_level = len(spaces) // 2
+            indent = '  ' * max(nesting_level, 0)
+            normalized_lines.append(f"{indent}- {content}")
+            inside_list_block = True
+            last_list_indent_level = nesting_level
+            continue
+
+        # If we are inside a list block but this line is not a bullet,
+        # treat it as continuation or explanation under list
+        if inside_list_block:
+            indent = '  ' * last_list_indent_level
+            normalized_lines.append(f"{indent}{stripped}")
+            continue
+
+        # Otherwise normal line outside any list
+        normalized_lines.append(stripped)
+        inside_list_block = False
+
+    return "\n".join(normalized_lines)
+
