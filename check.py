@@ -327,3 +327,89 @@ def normalize_legal_text(text: str) -> str:
     return "\n".join(normalized_lines)
 
 
+
+import re
+
+def normalize_legal_text(text: str) -> str:
+    lines = text.splitlines()
+    normalized_lines = []
+    inside_list_block = False
+    last_list_indent_level = 0
+    last_numbered_value = 0
+    after_number_line = False
+
+    for i, line in enumerate(lines):
+        stripped = line.rstrip()
+
+        # Handle blank lines smartly
+        if not stripped.strip():
+            if inside_list_block and not after_number_line:
+                # inside a list block - skip blank line
+                continue
+            else:
+                normalized_lines.append("")
+                continue
+
+        # Numbered line (like 1.)
+        num_match = re.match(r'^(\d+)\.', stripped)
+        if num_match:
+            current_number = int(num_match.group(1))
+            if current_number == 1 and last_numbered_value > 1:
+                # e.g. after point 5. comes 1. again => new section
+                normalized_lines.append("")
+            normalized_lines.append(stripped)
+            inside_list_block = True
+            last_list_indent_level = 0
+            last_numbered_value = current_number
+
+            # Now peek ahead
+            if i+1 < len(lines):
+                next_line = lines[i+1]
+                if next_line.startswith(" "):
+                    after_number_line = True
+                else:
+                    after_number_line = False
+            else:
+                after_number_line = False
+            continue
+
+        # Bullet line
+        bullet_match = re.match(r'^(\s*)-\s+(.*)', line)
+        if bullet_match:
+            spaces = bullet_match.group(1)
+            content = bullet_match.group(2)
+            nesting_level = len(spaces) // 2
+            indent = '  ' * max(nesting_level, 0)
+            normalized_lines.append(f"{indent}- {content}")
+            inside_list_block = True
+            last_list_indent_level = nesting_level
+            after_number_line = False
+            continue
+
+        # If directly after a numbered line, decide based on indentation
+        if after_number_line:
+            if line.startswith(" "):
+                indent = '  ' * last_list_indent_level
+                normalized_lines.append(f"{indent}{stripped}")
+                inside_list_block = True
+            else:
+                # Not indented, break list block
+                normalized_lines.append("")
+                normalized_lines.append(stripped)
+                inside_list_block = False
+            after_number_line = False
+            continue
+
+        # Inside list block
+        if inside_list_block:
+            indent = '  ' * last_list_indent_level
+            normalized_lines.append(f"{indent}{stripped}")
+            continue
+
+        # Normal line outside any list
+        normalized_lines.append(stripped)
+        inside_list_block = False
+        last_numbered_value = 0
+
+    return "\n".join(normalized_lines)
+
