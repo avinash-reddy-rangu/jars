@@ -78,3 +78,17 @@ def normalize_legal_text(text: str) -> str:
 
     # Finally join all processed lines into a single string with newlines
     return "\n".join(normalized_lines)
+    final_output = []
+    for i, line in enumerate(normalized_lines):
+        if i > 0:
+            prev_line = normalized_lines[i-1]
+            # Check if both current and previous lines are numbered
+            if re.match(r'^\d+\.', prev_line) and re.match(r'^\d+\.', line):
+                # do NOT add an extra newline
+                final_output.append(line)
+                continue
+        final_output.append('\n' + line)
+    
+    # The very first line doesn't need a leading \n
+    final_text = ''.join(final_output).lstrip('\n')
+
