@@ -92,3 +92,71 @@ def normalize_legal_text(text: str) -> str:
     # The very first line doesn't need a leading \n
     final_text = ''.join(final_output).lstrip('\n')
 
+
+import re
+
+def normalize_legal_text(text: str) -> str:
+    """
+    Processes legal or structured text to normalize numbered lists,
+    bullet sub-lists, and headings, ensuring:
+    - No blank lines between list items or sub-lists.
+    - Proper indentation based on sub-list nesting.
+    - Headings and normal text maintain line breaks appropriately.
+    """
+    # Split text into individual lines
+    lines = text.splitlines()
+    
+    # Will accumulate the final formatted text
+    normalized_text = ""
+    
+    # Tracks what kind of line we processed last: 'number', 'bullet', or 'normal'
+    last_line_type = None
+
+    for line in lines:
+        # Strip spaces for matching
+        stripped = line.strip()
+        
+        # Skip purely empty lines entirely (do not add to output)
+        if not stripped:
+            continue
+
+        # 1️⃣ Check for numbered list items like '1.', '2.', etc
+        if re.match(r'^\d+\.', stripped):
+            if last_line_type in {'number', 'bullet'}:
+                # If previous was also a list item, add directly with no extra newline
+                normalized_text += f"{stripped}"
+            else:
+                # If first item or after normal text, add newline
+                if normalized_text:
+                    normalized_text += f"\n{stripped}"
+                else:
+                    normalized_text = stripped
+            last_line_type = 'number'
+            continue
+
+        # 2️⃣ Check for bullet sub-lists like ' - ...'
+        bullet_match = re.match(r'^( +\- )(.*)', line)
+        if bullet_match:
+            spaces_before_dash = bullet_match.group(1)  # e.g. ' - '
+            content = bullet_match.group(2)            # text after dash
+            # Calculate nesting level (each 2 spaces assumed as one level)
+            nesting_level = len(spaces_before_dash) // 2
+            # Add further indentation if nested
+            indent = '  ' * (nesting_level - 1) if nesting_level > 1 else ''
+            # Build bullet line with appropriate indentation
+            bullet_line = f"{indent}{spaces_before_dash}{content}"
+            
+            # Always ensure bullet lines start on their own line
+            normalized_text += f"\n{bullet_line}"
+            last_line_type = 'bullet'
+            continue
+
+        # 3️⃣ For normal lines (headings or paragraph text)
+        # Insert newline before if needed to keep separation
+        if normalized_text:
+            normalized_text += f"\n{stripped}"
+        else:
+            normalized_text = stripped
+        last_line_type = 'normal'
+
+    return normalized_text
