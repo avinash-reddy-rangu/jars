@@ -265,3 +265,65 @@ def normalize_legal_text(text: str) -> str:
 
     return "\n".join(normalized_lines)
 
+
+import re
+
+def normalize_legal_text(text: str) -> str:
+    lines = text.splitlines()
+    normalized_lines = []
+    inside_list_block = False
+    last_list_indent_level = 0
+    last_numbered_value = 0
+
+    for line in lines:
+        stripped = line.rstrip()
+
+        # Blank line
+        if not stripped.strip():
+            if inside_list_block:
+                # Skip blank lines inside a list block
+                continue
+            else:
+                # Keep blank lines outside list block
+                normalized_lines.append("")
+                continue
+
+        # Numbered list item (like "1. text")
+        num_match = re.match(r'^(\d+)\.', stripped)
+        if num_match:
+            current_number = int(num_match.group(1))
+            # If we see a "1." immediately after a bigger number (like after 5.), force separation
+            if current_number == 1 and last_numbered_value > 1:
+                normalized_lines.append("")  # insert blank line to start new logical section
+            normalized_lines.append(stripped)
+            inside_list_block = True
+            last_list_indent_level = 0
+            last_numbered_value = current_number
+            continue
+
+        # Bullet item (like "    - item")
+        bullet_match = re.match(r'^(\s*)-\s+(.*)', line)
+        if bullet_match:
+            spaces = bullet_match.group(1)
+            content = bullet_match.group(2)
+            nesting_level = len(spaces) // 2
+            indent = '  ' * max(nesting_level, 0)
+            normalized_lines.append(f"{indent}- {content}")
+            inside_list_block = True
+            last_list_indent_level = nesting_level
+            continue
+
+        # Inside list block continuation line (not bullet)
+        if inside_list_block:
+            indent = '  ' * last_list_indent_level
+            normalized_lines.append(f"{indent}{stripped}")
+            continue
+
+        # Normal outside line
+        normalized_lines.append(stripped)
+        inside_list_block = False
+        last_numbered_value = 0  # reset numbering context
+
+    return "\n".join(normalized_lines)
+
+
