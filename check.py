@@ -160,3 +160,53 @@ def normalize_legal_text(text: str) -> str:
         last_line_type = 'normal'
 
     return normalized_text
+
+
+import re
+
+def normalize_legal_text(text: str) -> str:
+    """
+    Processes legal or structured text to normalize:
+    - Numbered lists
+    - Bullet sub-lists with ' -'
+    - Headings and paragraphs
+    Ensures:
+    - No blank lines between list items or sub-lists.
+    - Proper indentation for sub-lists.
+    - Clean one-line separation of items.
+    """
+    lines = text.splitlines()
+    normalized_lines = []
+    last_line_type = None  # Tracks: 'number', 'bullet', 'normal'
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Skip purely empty lines
+        if not stripped:
+            continue
+
+        # 1️⃣ Check for numbered items like '1.', '2.'
+        if re.match(r'^\d+\.', stripped):
+            normalized_lines.append(stripped)
+            last_line_type = 'number'
+            continue
+
+        # 2️⃣ Check for bullets like ' - ...'
+        bullet_match = re.match(r'^( +\- )(.*)', line)
+        if bullet_match:
+            spaces_before_dash = bullet_match.group(1)
+            content = bullet_match.group(2)
+            nesting_level = len(spaces_before_dash) // 2
+            indent = '  ' * (nesting_level - 1) if nesting_level > 1 else ''
+            bullet_line = f"{indent}{spaces_before_dash}{content}"
+            normalized_lines.append(bullet_line)
+            last_line_type = 'bullet'
+            continue
+
+        # 3️⃣ Otherwise treat as normal heading or paragraph line
+        normalized_lines.append(line.rstrip())
+        last_line_type = 'normal'
+
+    # Join all lines with a single \n between each
+    return "\n".join(normalized_lines)
