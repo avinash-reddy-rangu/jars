@@ -120,3 +120,45 @@ Want me to:
 * Or also generate a small shell script to merge all individual step files into a single comparison file?
 
 Tell me and we’ll finish this brilliantly. 🚀
+
+
+
+
+import re
+from openai import OpenAI
+
+client = OpenAI()
+
+def extract_prompts(file_path):
+    with open(file_path, 'r') as f:
+        content = f.read()
+    pattern = r'STEP: (.*?)\n<<<PROMPT>>>(.*?)<<<END>>>'
+    return re.findall(pattern, content, re.DOTALL)
+
+us_prompts = dict(extract_prompts('/mnt/data/us_prompts_trace.txt'))
+uk_prompts = dict(extract_prompts('/mnt/data/uk_prompts_trace.txt'))
+
+for step in us_prompts:
+    if step in uk_prompts:
+        print(f"\n=== Comparing step: {step} ===\n")
+        us_text = us_prompts[step]
+        uk_text = uk_prompts[step]
+        
+        # 🔥 Send to LLM for comparison
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "user", "content": f"""
+Compare these two prompts for the step: '{step}'. 
+Highlight differences in instructions, style, bullet point or numbering guidance, 
+or any formatting expectations.
+
+--- US Prompt ---
+{us_text}
+
+--- UK Prompt ---
+{uk_text}
+"""}
+            ]
+        )
+        print(response.choices[0].message.content)
