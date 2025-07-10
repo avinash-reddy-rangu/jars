@@ -248,3 +248,50 @@ full_report = compare_us_uk_prompts(
 
 print(full_report)
 
+
+from base_plan.chains.draft.llm_generator import LLMGenerator
+
+def compare_us_uk_prompts(us_prompts: dict, uk_prompts: dict, model, tenant, tracing_info, output_file_path):
+    with open(output_file_path, 'w', encoding='utf-8') as output_file:
+        for step in us_prompts:
+            if step in uk_prompts:
+                us_text = us_prompts[step]
+                uk_text = uk_prompts[step]
+
+                # 🔍 Clear, factual audit prompt to LLM
+                comparison_prompt = f"""
+You are an expert auditing system for legal drafting prompt differences.
+
+Please compare the following two prompts for step: '{step}'.
+
+STRICT INSTRUCTIONS:
+- ONLY provide factual differences.
+- Highlight exactly what is PRESENT in the US prompt that is ABSENT in the UK prompt, and vice versa.
+- Do NOT hallucinate or guess intentions.
+- Do NOT give any recommendations.
+- Simply list what is explicitly in one prompt and missing in the other.
+
+--- US PROMPT ---
+{us_text}
+
+--- UK PROMPT ---
+{uk_text}
+"""
+
+                llm = LLMGenerator(
+                    intent=f"Compare:{step}",
+                    model=model,
+                    tenant=tenant,
+                    prompt=comparison_prompt,
+                    tracing_info=tracing_info,
+                    trace_id=f"prompt-compare-{step}",
+                    temperature=0.0
+                )
+                response = llm.run()
+
+                # 🔥 Write to audit file
+                output_file.write(f"=== STEP: {step} ===\n")
+                output_file.write(f"--- US PROMPT ---\n{us_text}\n")
+                output_file.write(f"--- UK PROMPT ---\n{uk_text}\n")
+                output_file.write(f"--- LLM COMPARISON ---\n{response}\n\n")
+
