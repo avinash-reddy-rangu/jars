@@ -162,3 +162,89 @@ or any formatting expectations.
             ]
         )
         print(response.choices[0].message.content)
+
+
+
+from base_plan.chains.draft.llm_generator import LLMGenerator
+
+def compare_us_uk_prompts(us_prompts: dict, uk_prompts: dict, model, tenant, tracing_info):
+    differences_report = ""
+
+    for step in us_prompts:
+        if step in uk_prompts:
+            # Build comparison prompt
+            comparison_prompt = f"""
+Compare the following two prompts for step: '{step}'.
+Highlight differences in style, bullet point guidance, numbered list expectations,
+markdown instructions, or any formatting directions.
+
+--- US Prompt ---
+{us_prompts[step]}
+
+--- UK Prompt ---
+{uk_prompts[step]}
+
+Respond in bullet points.
+"""
+
+            # Run LLMGenerator the same way your drafting chain does
+            llm = LLMGenerator(
+                intent=f"Compare:{step}",
+                model=model,
+                tenant=tenant,
+                prompt=comparison_prompt,
+                tracing_info=tracing_info,
+                trace_id=f"prompt-compare-{step}",
+                temperature=0.0
+            )
+            response = llm.run()
+
+            # Append results
+            differences_report += f"\n=== {step} ===\n{response}\n"
+
+    return differences_report
+
+
+import re
+
+def load_prompts_from_file(file_path):
+    with open(file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    # Extract: STEP: <name> + prompt inside <<<PROMPT>>> ... <<<END>>>
+    pattern = r"STEP: (.*?)\n<<<PROMPT>>>(.*?)<<<END>>>"
+    matches = re.findall(pattern, content, re.DOTALL)
+
+    # Build dict {step_name: prompt_text}
+    prompts_dict = {}
+    for step, prompt in matches:
+        prompts_dict[step.strip()] = prompt.strip()
+    return prompts_dict
+
+
+# Load US
+us_prompts = load_prompts_from_file("/mnt/data/us_prompts_trace.txt")
+
+# Load UK
+uk_prompts = load_prompts_from_file("/mnt/data/uk_prompts_trace.txt")
+
+# Example output:
+print("Loaded US steps:", list(us_prompts.keys()))
+print("Loaded UK steps:", list(uk_prompts.keys()))
+
+
+
+# Assuming you've loaded your prompts from txt file into dicts:
+# us_prompts = {"TransactionalTaskPlan": "...", "FirstDraft": "..."}
+# uk_prompts = {"TransactionalTaskPlan": "...", "FirstDraft": "..."}
+
+tracing_info = {"asset_id": config.ASSET_ID}
+full_report = compare_us_uk_prompts(
+    us_prompts, uk_prompts,
+    model=config.LLM_PROXY_MODEL_TRANSACTIONAL_INTERMEDIATE,
+    tenant=config.DRAFTING_LLM_PROXY_TENANT_KEY,
+    tracing_info=tracing_info
+)
+
+print(full_report)
+
