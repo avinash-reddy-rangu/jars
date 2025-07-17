@@ -477,3 +477,60 @@ def normalize_legal_text(text: str) -> str:
 
     return "\n".join(normalized_lines)
 
+
+
+        api_params = APIParameters(url=URL, payload=payload, headers=headers, timeout=10)
+        eqas_response = await call_api_async(api_params)
+        try:
+            if eqas_response.data is not None:
+                eqas_recs = eqas_response.data["qa_results"][self.index_name]["results"]
+            else:
+                eqas_recs = []
+        except KeyError:
+            self.logger.warning(
+                "EQAS Call Completed for content_type:{} with response: {} and {}.".format(
+                    self.index_name, eqas_response.status_code, eqas_response.data
+                )
+            )
+            return []
+
+        # Define selector to content type mapping
+        selector_to_content_type = {
+            "FormsAndPrecedents": EQAS_CONTENT_TYPES.UK_FORMS_CLAUSES_TRANSACTIONAL_FULL_DOC,
+            "Precedent": EQAS_CONTENT_TYPES.UK_PRECEDENTS_TRANSACTIONAL_FULL_DOC,
+            "PracticeNote": EQAS_CONTENT_TYPES.UK_PRACTICE_NOTES_TRANSACTIONAL_FULL_DOC,
+        }
+
+        output = []
+        for result in eqas_recs:
+            # Determine final index name
+            if (
+                config.some_flag and
+                self.index_name == EQAS_CONTENT_TYPES.full_doc and
+                isinstance(result.get("selectors"), list) and
+                result["selectors"]
+            ):
+                selector = result["selectors"][0]
+                final_index_name = selector_to_content_type.get(
+                    selector,
+                    EQAS_CONTENT_TYPES.UK_FORMS_CLAUSES_TRANSACTIONAL_FULL_DOC  # default
+                )
+            else:
+                final_index_name = self.index_name
+
+            output.append(
+                {
+                    "ln_title": result.get("rec_title", ""),
+                    "passage_text": result.get("rec_text", ""),
+                    "lni": result.get("rec_id", ""),
+                    "outline_field": result.get("outline", ""),
+                    "practice_area_field": result.get("practice_areas", ""),
+                    "jurisdiction_field": result.get("geob", ""),
+                    "summary_field": result.get("summary", ""),
+                    "content_type_field": final_index_name,
+                    "pcsi_field": result.get("pcsi", ""),
+                }
+            )
+
+        return output
+
