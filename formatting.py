@@ -90,3 +90,109 @@ def format_text(text: str) -> str:
         return "\n".join(final_lines)
     except Exception as e:
         return text
+
+
+import re
+
+def format_text1(text: str) -> str:
+    try:
+        text = re.sub(r'\n\.\n\s*(-)', r'\n -', text)
+        lines = text.splitlines()
+
+        break_flag = False
+        for i, line in enumerate(lines):
+            if line.strip() == "":
+                continue
+            if line.strip().lower() == "plaintext" or line.strip().lower() == "plain text":
+                lines.pop(i)
+            if len(line.strip()) > 0:
+                break_flag = True
+            if break_flag:
+                break
+
+        text = "\n".join(lines)
+        normalized_lines = []
+        inside_list_block = False
+        last_list_indent_level = 0
+        last_numbered_value = 0
+
+        for line in lines:
+            stripped = line.rstrip()
+
+            if not stripped.strip():
+                if inside_list_block:
+                    continue
+                else:
+                    normalized_lines.append("")
+                    continue
+
+            num_match = re.match(r'^(\d+)\.', stripped)
+            if num_match:
+                current_number = int(num_match.group(1))
+                if current_number == 1 and last_numbered_value > 1:
+                    normalized_lines.append("")
+                normalized_lines.append(stripped)
+                inside_list_block = True
+                last_list_indent_level = 0
+                last_numbered_value = current_number
+                continue
+
+            bullet_match = re.match(r'^( +\- )(.*)', line)
+            if bullet_match:
+                spaces = bullet_match.group(1)
+                content = bullet_match.group(2)
+                nesting_level = len(spaces) // 2
+                indent = '  ' * max(nesting_level, 0)
+                normalized_lines.append(f"{indent}- {content}")
+                inside_list_block = True
+                last_list_indent_level = nesting_level
+                continue
+
+            if inside_list_block and line.startswith(" "):
+                indent = '  ' * last_list_indent_level
+                normalized_lines.append(f"{indent}{stripped}")
+                continue
+
+            if inside_list_block:
+                normalized_lines.append("")
+                inside_list_block = False
+                last_numbered_value = 0
+
+            normalized_lines.append(stripped)
+
+        # FINAL PASS: fix clause indentation
+        final_lines = []
+        clause_pattern = re.compile(r'^((\d+)(\.\d+)?(\.[a-z])?(\.[ivx]+)?)(\s+)(.*)', re.IGNORECASE)
+        sub_clause_pattern = re.compile(r'^([a-z]{1,2})\.\s+(.*)', re.IGNORECASE)
+        roman_clause_pattern = re.compile(r'^([ivx]{1,5})\.\s+(.*)', re.IGNORECASE)
+
+        current_indent_level = 0
+        for line in normalized_lines:
+            match = clause_pattern.match(line)
+            sub_match = sub_clause_pattern.match(line)
+            roman_match = roman_clause_pattern.match(line)
+
+            if match:
+                clause = match.group(1)
+                content = match.group(7)
+                levels = clause.count(".")
+                indent = "  " * levels
+                current_indent_level = levels
+                final_lines.append(f"{indent}{clause} {content}")
+            elif sub_match:
+                sub = sub_match.group(1)
+                content = sub_match.group(2)
+                indent = "  " * (current_indent_level + 1)
+                final_lines.append(f"{indent}{sub}. {content}")
+            elif roman_match:
+                roman = roman_match.group(1)
+                content = roman_match.group(2)
+                indent = "  " * (current_indent_level + 2)
+                final_lines.append(f"{indent}{roman}. {content}")
+            else:
+                final_lines.append(line)
+
+        return "\n".join(final_lines)
+
+    except Exception as e:
+        return text
