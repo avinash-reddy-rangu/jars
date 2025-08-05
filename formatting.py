@@ -96,12 +96,14 @@ import re
 
 import re
 
+import re
+
 def format_text(text: str) -> str:
     try:
         text = re.sub(r'\n\.\n\s*(-)', r'\n -', text)
         lines = text.splitlines()
 
-        # Skip headers before main content
+        # Remove pre-content junk like "plaintext"
         break_flag = False
         for i, line in enumerate(lines):
             if line.strip() == "":
@@ -122,7 +124,6 @@ def format_text(text: str) -> str:
         for line in lines:
             stripped = line.rstrip()
 
-            # Blank line
             if not stripped.strip():
                 if inside_list_block:
                     continue
@@ -130,7 +131,6 @@ def format_text(text: str) -> str:
                     normalized_lines.append("")
                     continue
 
-            # Numbered item (e.g., 1.)
             num_match = re.match(r'^(\d+)\.', stripped)
             if num_match:
                 current_number = int(num_match.group(1))
@@ -142,7 +142,6 @@ def format_text(text: str) -> str:
                 last_numbered_value = current_number
                 continue
 
-            # Bullet item (e.g., - something)
             bullet_match = re.match(r'^( +\- )(.*)', line)
             if bullet_match:
                 spaces = bullet_match.group(1)
@@ -154,7 +153,6 @@ def format_text(text: str) -> str:
                 last_list_indent_level = nesting_level
                 continue
 
-            # Indented explanation under list block
             if inside_list_block and line.startswith(" "):
                 indent = '  ' * last_list_indent_level
                 normalized_lines.append(f"{indent}{stripped}")
@@ -167,16 +165,19 @@ def format_text(text: str) -> str:
 
             normalized_lines.append(stripped)
 
-        # Final formatting pass: add proper indentation to clause levels
+        # Final formatting pass to fix clause/subclause indentation
         final_lines = []
         clause_pattern = re.compile(r'^((\d+)(\.\d+)?(\.[a-z])?(\.[ivx]+)?)(\s+)(.*)', re.IGNORECASE)
         sub_clause_pattern = re.compile(r'^([a-z])\.\s+(.*)', re.IGNORECASE)
 
         current_indent_level = 0
+        inside_sub_clause_block = False
+        sub_indent = 0
 
         for i, line in enumerate(normalized_lines):
-            match = clause_pattern.match(line)
-            sub_match = sub_clause_pattern.match(line)
+            stripped_line = line.strip()
+            match = clause_pattern.match(stripped_line)
+            sub_match = sub_clause_pattern.match(stripped_line)
 
             if match:
                 clause = match.group(1)
@@ -185,20 +186,28 @@ def format_text(text: str) -> str:
                 indent = "  " * levels
                 current_indent_level = levels
                 final_lines.append(f"{indent}{clause} {content}")
+                inside_sub_clause_block = False  # reset subclause flag
+
             elif sub_match:
                 sub = sub_match.group(1)
                 content = sub_match.group(2)
 
-                # Look back at the previous line
-                prev_line = normalized_lines[i - 1] if i > 0 else ""
-                if re.match(r'^\s*\d+\.\d+', prev_line):  # 1.1, 2.2, etc.
-                    indent = "  " * (current_indent_level + 1)
-                else:
-                    indent = "  " * current_indent_level
+                # Start subclause block only if we’re not already in one
+                if not inside_sub_clause_block:
+                    prev_line = normalized_lines[i - 1] if i > 0 else ""
+                    if re.match(r'^\s*\d+\.\d+', prev_line.strip()):
+                        sub_indent = current_indent_level + 1
+                    else:
+                        sub_indent = current_indent_level
+                    inside_sub_clause_block = True
 
+                indent = "  " * sub_indent
                 final_lines.append(f"{indent}{sub}. {content}")
+
             else:
                 final_lines.append(line)
+                if not stripped_line:
+                    inside_sub_clause_block = False  # reset on empty line
 
         return "\n".join(final_lines)
 
