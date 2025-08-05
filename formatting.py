@@ -94,16 +94,19 @@ def format_text(text: str) -> str:
 
 import re
 
-def format_text1(text: str) -> str:
+import re
+
+def format_text(text: str) -> str:
     try:
         text = re.sub(r'\n\.\n\s*(-)', r'\n -', text)
         lines = text.splitlines()
 
+        # Skip headers before main content
         break_flag = False
         for i, line in enumerate(lines):
             if line.strip() == "":
                 continue
-            if line.strip().lower() == "plaintext" or line.strip().lower() == "plain text":
+            if line.strip().lower() in {"plaintext", "plain text"}:
                 lines.pop(i)
             if len(line.strip()) > 0:
                 break_flag = True
@@ -119,6 +122,7 @@ def format_text1(text: str) -> str:
         for line in lines:
             stripped = line.rstrip()
 
+            # Blank line
             if not stripped.strip():
                 if inside_list_block:
                     continue
@@ -126,6 +130,7 @@ def format_text1(text: str) -> str:
                     normalized_lines.append("")
                     continue
 
+            # Numbered item (e.g., 1.)
             num_match = re.match(r'^(\d+)\.', stripped)
             if num_match:
                 current_number = int(num_match.group(1))
@@ -137,6 +142,7 @@ def format_text1(text: str) -> str:
                 last_numbered_value = current_number
                 continue
 
+            # Bullet item (e.g., - something)
             bullet_match = re.match(r'^( +\- )(.*)', line)
             if bullet_match:
                 spaces = bullet_match.group(1)
@@ -148,6 +154,7 @@ def format_text1(text: str) -> str:
                 last_list_indent_level = nesting_level
                 continue
 
+            # Indented explanation under list block
             if inside_list_block and line.startswith(" "):
                 indent = '  ' * last_list_indent_level
                 normalized_lines.append(f"{indent}{stripped}")
@@ -160,17 +167,16 @@ def format_text1(text: str) -> str:
 
             normalized_lines.append(stripped)
 
-        # FINAL PASS: fix clause indentation
+        # Final formatting pass: add proper indentation to clause levels
         final_lines = []
         clause_pattern = re.compile(r'^((\d+)(\.\d+)?(\.[a-z])?(\.[ivx]+)?)(\s+)(.*)', re.IGNORECASE)
-        sub_clause_pattern = re.compile(r'^([a-z]{1,2})\.\s+(.*)', re.IGNORECASE)
-        roman_clause_pattern = re.compile(r'^([ivx]{1,5})\.\s+(.*)', re.IGNORECASE)
+        sub_clause_pattern = re.compile(r'^([a-z])\.\s+(.*)', re.IGNORECASE)
 
         current_indent_level = 0
-        for line in normalized_lines:
+
+        for i, line in enumerate(normalized_lines):
             match = clause_pattern.match(line)
             sub_match = sub_clause_pattern.match(line)
-            roman_match = roman_clause_pattern.match(line)
 
             if match:
                 clause = match.group(1)
@@ -182,13 +188,15 @@ def format_text1(text: str) -> str:
             elif sub_match:
                 sub = sub_match.group(1)
                 content = sub_match.group(2)
-                indent = "  " * (current_indent_level + 1)
+
+                # Look back at the previous line
+                prev_line = normalized_lines[i - 1] if i > 0 else ""
+                if re.match(r'^\s*\d+\.\d+', prev_line):  # 1.1, 2.2, etc.
+                    indent = "  " * (current_indent_level + 1)
+                else:
+                    indent = "  " * current_indent_level
+
                 final_lines.append(f"{indent}{sub}. {content}")
-            elif roman_match:
-                roman = roman_match.group(1)
-                content = roman_match.group(2)
-                indent = "  " * (current_indent_level + 2)
-                final_lines.append(f"{indent}{roman}. {content}")
             else:
                 final_lines.append(line)
 
