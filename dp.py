@@ -462,6 +462,38 @@ def main():
     OUTPUT_PATH.write_text(html, encoding="utf-8")
     print(f"[OK] Wrote {OUTPUT_PATH.resolve()}")
 
+def _extract_pid_texts_into_map(text: str, pid_text_map: Dict[str, str]) -> None:
+    """
+    Given a builder prompt text containing PID tokens, extract pid→text pairs.
+
+    Now supports:
+      1) <pid-12> ... </pid-12>      <-- NEW (preferred per your latest format)
+      2) [pid-12: text...]
+      3) [pid-12] text until the next [pid-..] or end.
+
+    For a given pid, we keep the longest text seen.
+    """
+
+    # Pattern 1 (preferred): <pid-12> ... </pid-12>
+    for m in re.finditer(r'<pid-(\d+)>\s*(.*?)\s*</pid-\1>', text, flags=re.DOTALL | re.IGNORECASE):
+        pid = f"pid-{m.group(1)}"
+        seg = m.group(2).strip()
+        if seg and len(seg) > len(pid_text_map.get(pid, "")):
+            pid_text_map[pid] = seg
+
+    # Pattern 2: [pid-12: text...]
+    for m in re.finditer(r'\[pid-(\d+)\s*:\s*([^\]]+)\]', text):
+        pid = f"pid-{m.group(1)}"
+        payload = m.group(2).strip()
+        if payload and len(payload) > len(pid_text_map.get(pid, "")):
+            pid_text_map[pid] = payload
+
+    # Pattern 3: [pid-12] capture following text up to the next [pid-..] token
+    for m in re.finditer(r'\[pid-(\d+)\]\s*((?:(?!\[pid-\d+\]).)*)', text, flags=re.DOTALL):
+        pid = f"pid-{m.group(1)}"
+        seg = m.group(2).strip()
+        if seg and len(seg) > len(pid_text_map.get(pid, "")):
+            pid_text_map[pid] = seg
 
 if __name__ == "__main__":
     main()
