@@ -21,9 +21,9 @@ QUERY = (
 CORPUS_TRIPLET = "4fd33ae9-9d1a-46d2-b6c6-8a4f805d4acc/c562387b-a3f6-4f15-b356-6564bc24398d/eb2c47ca-89f3-4826-aa68-23de925b3bfc"
 HEADERS_IN_PAYLOAD = {"X-LN-Application": "0", "x-ln-request": "0", "X-LN-Session": "0"}
 
-# Turn on streaming to capture intermediate events
+# Do NOT stream; we will parse the SSE-style blocks from the full response text
 ANSWER_LOCATOR = True
-STREAMING = True
+STREAMING = False
 
 # SkyVault presigned XHTML URL endpoint (required for PID links)
 SKYVAULT_URL = "https://skyvault.example/api"   # <-- set to your real base URL
@@ -56,85 +56,131 @@ def build_payload(query: str,
     }
 
 
-def stream_predict(endpoint: str, payload: Dict[str, Any]) -> Tuple[Dict[str, str], Dict[str, Any]]:
-    """
-    Stream SSE from /predict and return:
-      - pid_text_map: {'pid-9': 'text', ...} captured from intermediate prompt builder events
-      - final_content: the last event's content (message, mappings, ref_documents, ref_anchors, type, etc.)
-    """
+def call_predict_text(endpoint: str, payload: Dict[str, Any], timeout: Optional[float] = None) -> str:
     headers = {"Content-Type": "application/json"}
-    pid_text_map: Dict[str, str] = {}
-    final_content: Dict[str, Any] = {}
+    r = requests.post(endpoint, data=json.dumps(payload), headers=headers, timeout=timeout, stream=False)
+    r.raise_for_status()
+    # Some deployments return application/json (single object). Others return SSE-style text.
+    # Always return text; the parser will handle both.
+    return r.text
 
-    with requests.post(endpoint, data=json.dumps(payload), headers=headers, stream=True) as r:
-        r.raise_for_status()
-        buf = ""
-        for raw_line in r.iter_lines(decode_unicode=True):
-            if raw_line is None:
-                continue
-            line = raw_line.strip()
-            if not line:
-                # end of one SSE event; try parse collected buf if needed
-                buf = ""
-                continue
-            if line.startswith(":"):
-                # SSE comment line, ignore
-                continue
-            if line.startswith("data:"):
-                data_str = line[5:].strip()
-                if not data_str:
-                    continue
-                try:
-                    ev = json.loads(data_str)
-                except Exception:
-                    # Some servers may concatenate; try to extract the last JSON object
+
+def _extract_json_blocks_from_text(text: str) -> List[dict]:
+    """
+    Extract JSON objects from the response text.
+    Supports:
+      - SSE-like sequences: lines beginning with 'data: { ... }'
+      - Plain JSON (single object)
+    Uses a brace-balanced scanner after each 'data:' marker.
+    """
+    blocks: List[dict] = []
+
+    # 1) Try SSE style: 'data: { ... }'
+    starts = list(re.finditer(r'data:\s*{', text))
+    for m in starts:
+        i = m.start()
+        start = text.find('{', i)
+        if start < 0:
+            continue
+        depth = 0
+        j = start
+        while j < len(text):
+            ch = text[j]
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    raw = text[start:j+1]
                     try:
-                        m = re.search(r'({.*})', data_str, re.DOTALL)
-                        if m:
-                            ev = json.loads(m.group(1))
-                        else:
-                            continue
+                        blocks.append(json.loads(raw))
                     except Exception:
-                        continue
+                        pass
+                    break
+            j += 1
 
-                content = ev.get("content") if isinstance(ev, dict) else None
-                if isinstance(content, dict):
-                    # 1) Capture PID texts from prompt-like fields in intermediate events
-                    for key in ("prompt", "ai_prompt", "builder_prompt", "content"):
-                        val = content.get(key)
-                        if isinstance(val, str) and "[pid-" in val:
-                            extract_pid_texts_into_map(val, pid_text_map)
+    # 2) If no SSE blocks found, try to parse the whole text as one JSON object
+    if not blocks:
+        try:
+            obj = json.loads(text)
+            blocks.append(obj)
+        except Exception:
+            pass
 
-                    # 2) Track latest full content (final messages usually have is_turn_finished/finished flags)
-                    if content.get("is_turn_finished") or ev.get("finished") or ev.get("type") == "conversational-manager-message-finished":
-                        final_content = content
-
-    return pid_text_map, final_content
+    return blocks
 
 
-def extract_pid_texts_into_map(text: str, pid_text_map: Dict[str, str]) -> None:
+def find_pid_texts_from_promptbuilder(blocks: List[dict]) -> Dict[str, str]:
+    """
+    Locate the task event named 'PromptBuilder:Argument Questions' and extract PID→text pairs
+    from its content.prompt (or similar prompt field).
+    """
+    pid_text_map: Dict[str, str] = {}
+
+    for ev in blocks:
+        if not isinstance(ev, dict):
+            continue
+        # Match event by type 'task' and name containing 'PromptBuilder:Argument Questions'
+        t = ev.get("type")
+        n = ev.get("name") or ev.get("task") or ""
+        if (t == "task") and isinstance(n, str) and "PromptBuilder:Argument Questions" in n:
+            content = ev.get("content") if isinstance(ev.get("content"), dict) else {}
+            prompt_text = None
+            # prefer 'prompt', then 'ai_prompt', then any string fields with pid tokens
+            for k in ("prompt", "ai_prompt", "builder_prompt", "content"):
+                val = content.get(k)
+                if isinstance(val, str) and "[pid-" in val:
+                    prompt_text = val
+                    break
+            if prompt_text:
+                _extract_pid_texts_into_map(prompt_text, pid_text_map)
+
+    return pid_text_map
+
+
+def _extract_pid_texts_into_map(text: str, pid_text_map: Dict[str, str]) -> None:
     """
     Given a builder prompt text containing [pid-#] tokens, extract pid→text pairs.
-    We support both:
+    Supports:
       [pid-12: text...]
       [pid-12] text until the next [pid-..] or end.
     Keep the longest text seen for a given pid.
     """
     # Pattern B: [pid-12: text...]
-    for m in re.finditer(r'\\[pid-(\\d+)\\s*:\\s*([^\\]]+)\\]', text):
+    for m in re.finditer(r'\[pid-(\d+)\s*:\s*([^\]]+)\]', text):
         pid = f"pid-{m.group(1)}"
         payload = m.group(2).strip()
-        if payload:
-            if len(payload) > len(pid_text_map.get(pid, "")):
-                pid_text_map[pid] = payload
+        if payload and len(payload) > len(pid_text_map.get(pid, "")):
+            pid_text_map[pid] = payload
 
     # Pattern A: [pid-12] capture following text up to next pid token
-    for m in re.finditer(r'\\[pid-(\\d+)\\]\\s*((?:(?!\\[pid-\\d+\\]).)*)', text, flags=re.DOTALL):
+    for m in re.finditer(r'\[pid-(\d+)\]\s*((?:(?!\[pid-\d+\]).)*)', text, flags=re.DOTALL):
         pid = f"pid-{m.group(1)}"
         seg = m.group(2).strip()
-        if seg:
-            if len(seg) > len(pid_text_map.get(pid, "")):
-                pid_text_map[pid] = seg
+        if seg and len(seg) > len(pid_text_map.get(pid, "")):
+            pid_text_map[pid] = seg
+
+
+def get_final_content(blocks: List[dict]) -> Dict[str, Any]:
+    """
+    Choose the final content block:
+      - Prefer objects with 'type' == 'conversational-manager-message-finished' or finished true
+      - Else, last block
+    Return that block's 'content' if present; else empty dict.
+    """
+    chosen: Optional[dict] = None
+    for ev in blocks:
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("type") == "conversational-manager-message-finished" or ev.get("finished") is True:
+            chosen = ev
+    if not chosen and blocks:
+        chosen = blocks[-1]
+
+    if isinstance(chosen, dict):
+        content = chosen.get("content")
+        return content if isinstance(content, dict) else {}
+    return {}
 
 
 def html_escape(s: str) -> str:
@@ -195,7 +241,7 @@ def build_pid_link(pid_key: str,
                    mappings: Dict[str, List[Dict[str, Any]]],
                    skyvault_map: Dict[str, str]) -> Optional[str]:
     """
-    Build a plain XHTML link for the PID (no fragments). No CDC fallback.
+    Build a plain XHTML link for the PID (no fragments).
     """
     entries = mappings.get(pid_key) or []
     if not entries:
@@ -364,17 +410,24 @@ def main():
     corpora = [CORPUS_TRIPLET]
     payload = build_payload(QUERY, corpora, HEADERS_IN_PAYLOAD, ANSWER_LOCATOR, STREAMING)
 
-    # 1) Stream predict to capture pid texts + final content
-    pid_text_map, final_content = stream_predict(PREDICT_URL, payload)
+    # 1) Call predict (non-streaming), parse blocks
+    text = call_predict_text(PREDICT_URL, payload)
+    blocks = _extract_json_blocks_from_text(text)
 
-    # 2) Pull fields from final content
+    # 2) Extract PID texts from the prompt-builder task
+    pid_text_map = find_pid_texts_from_promptbuilder(blocks)
+
+    # 3) Get final content
+    final_content = get_final_content(blocks)
+
+    # 4) Pull fields from final content
     message = final_content.get("message", "") if isinstance(final_content, dict) else ""
     content_type = final_content.get("type") if isinstance(final_content, dict) else None
     ref_anchors = final_content.get("ref_anchors") or []
     ref_documents = final_content.get("ref_documents") or []
     mappings = final_content.get("mappings") or {}
 
-    # 3) Fetch SkyVault presigned URLs (required for PID hyperlinks)
+    # 5) Fetch SkyVault presigned URLs (required for PID hyperlinks)
     try:
         customer_id, database, table = CORPUS_TRIPLET.split("/", 2)
     except ValueError:
@@ -391,7 +444,7 @@ def main():
         except Exception as e:
             print(f"[WARN] SkyVault presigned fetch failed: {e}")
 
-    # 4) Render HTML
+    # 6) Render HTML
     html = render_html(
         qid=QID,
         query=QUERY,
