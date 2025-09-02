@@ -16,8 +16,8 @@ ANSWER_LOCATOR = True
 STREAMING = False
 PDMFID = "1537339"
 
-EXCEL_PATH = "./argument_inputs.xlsx"        # <-- put your workbook here
-OUTPUT_DIR = Path("./output_arg")            # output: ./output_arg/argument_QID_{qid}.html
+EXCEL_PATH = "./argument_inputs.xlsx"        # <-- workbook path
+OUTPUT_DIR = Path("./output_arg")            # output dir
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 TEMPLATE_SEPARATOR = "======================================================================================================"
@@ -277,7 +277,10 @@ def render_html(qid: str,
     const table  = a.getAttribute('data-table');
     if (!upload || !cust || !db || !table) return false;
 
-    const url = SKYVAULT_BASE + "/generate_presigned_urls_xhtml/" + encodeURIComponent(cust) + "/" + encodeURIComponent(db) + "/" + encodeURIComponent(table) + "/documents";
+    const url = SKYVAULT_BASE + "/generate_presigned_urls_xhtml/" +
+                encodeURIComponent(cust) + "/" +
+                encodeURIComponent(db) + "/" +
+                encodeURIComponent(table) + "/documents";
     try {{
       const resp = await fetch(url, {{
         method: "POST",
@@ -301,7 +304,6 @@ def render_html(qid: str,
 </head>
 <body>
 """
-
     parts = []
     parts.append(f"<div>QID: {html_escape(qid)}</div>")
     parts.append("<div class='sep'>=====</div><br>")
@@ -312,39 +314,77 @@ def render_html(qid: str,
     parts.append("<h2>AI Response</h2>")
     parts.append(f"<div>{message_html}</div><br>")
 
-    # PID References
+    # PID References — clickable PID link for each pid (dynamic presign on click)
     if mappings:
         parts.append("<h2>PID References</h2>")
-        for pid_key, entries in mappings.items():
-            parts.append(f"<div><strong>{html_escape(pid_key)}</strong></div>")
+        try:
+            customer, database, table = corpus_triplet.split("/", 2)
+        except ValueError:
+            customer = database = table = ""
+        for pid_key, entries in sorted(mappings.items(), key=lambda kv: int(re.sub(r'[^0-9]','', kv[0]) or '0')):
+            pid_num = re.sub(r'[^0-9]','', pid_key) or pid_key
+            pid_text = pid_text_map.get(pid_key, "")
+            safe_text = html_escape(pid_text)
+            # clickable [pid-#]
+            parts.append(
+                f'<div><span class="pid-wrap">'
+                f'<a class="pid-anchor" href="#" '
+                f'data-upload="{html_escape((entries or [{}])[0].get("upload_identifier",""))}" '
+                f'data-customer="{html_escape(customer)}" '
+                f'data-database="{html_escape(database)}" '
+                f'data-table="{html_escape(table)}" '
+                f'onclick="return openPidDoc(this)" '
+                f'title="{safe_text}">[pid-{pid_num}]</a>'
+                f'<span class="pid-tooltip">{safe_text}</span>'
+                f'</span></div>'
+            )
+            # show all mapping entries for this pid (each upload_id clickable too)
             for ent in entries or []:
                 upload_id = ent.get("upload_identifier", "")
+                parts.append(
+                    f'<div style="margin-left:1.25rem">• '
+                    f'<a href="#" onclick="return openPidDoc(this)" '
+                    f'data-upload="{html_escape(upload_id)}" '
+                    f'data-customer="{html_escape(customer)}" '
+                    f'data-database="{html_escape(database)}" '
+                    f'data-table="{html_escape(table)}" '
+                    f'title="Open source document">{html_escape(upload_id)}</a>'
+                    f'</div>'
+                )
                 xpaths = ent.get("xpaths") or []
-                parts.append(f"<div>&nbsp;&nbsp;• upload_id: {html_escape(upload_id)}</div>")
                 if xpaths:
-                    parts.append("<div>&nbsp;&nbsp;&nbsp;&nbsp;xpaths:</div>")
+                    parts.append("<div style='margin-left:2.5rem'>xpaths:</div>")
                     for xp in xpaths:
-                        parts.append(f"<div>&nbsp;&nbsp;&nbsp;&nbsp;- {html_escape(xp)}</div>")
+                        parts.append(f"<div style='margin-left:2.5rem'>- {html_escape(xp)}</div>")
             parts.append("<br>")
 
     # Citations
-    parts.append("<h2>Citations</h2>")
-    parts.append("<div class='muted'>Links open in Lexis+ (UK).</div>")
-    for d in (final_docs := (final_docs if (final_docs := None) else None)) or ref_documents:
-        lni = d.get("lni")
-        ctype = d.get("content_type", "")
-        doc_name = d.get("document_name", "")
-        passage = d.get("passage_text", "")
-        link = f"https://plus.lexis.com/uk/document/?pdmfid={pdmfid}&pddocfullpath=%2Fshared%2Fdocument%2F{ctype}%2Furn%3AcontentItem%3A{lni}" if lni and ctype else "#"
-        try:
-            idx = int(d.get("id", 0)) + 1
-        except Exception:
-            idx = d.get("id", 0)
-        parts.append("<div>Document_name:</div>")
-        parts.append(f'<div>[{idx}] <a target="_blank" href="{html_escape(link)}">{html_escape(doc_name)}</a></div>')
-        parts.append("<div>Passage_text:</div>")
-        parts.append(f"<div>{html_escape(passage)}</div>")
-        parts.append(f"<div class='sep'>{TEMPLATE_SEPARATOR}</div>")
+    if ref_documents:
+        parts.append("<h2>Citations</h2>")
+        parts.append("<div class='muted'>Links open in Lexis+ (UK).</div>")
+        for d in ref_documents:
+            lni = d.get("lni")
+            ctype = d.get("content_type", "")
+            doc_name = d.get("document_name", "")
+            passage = d.get("passage_text", "")
+            link = f"https://plus.lexis.com/uk/document/?pdmfid={pdmfid}&pddocfullpath=%2Fshared%2Fdocument%2F{ctype}%2Furn%3AcontentItem%3A{lni}" if lni and ctype else "#"
+            try:
+                idx = int(d.get("id", 0)) + 1
+            except Exception:
+                idx = d.get("id", 0)
+            parts.append("<div>Document_name:</div>")
+            parts.append(f'<div>[{idx}] <a target="_blank" href="{html_escape(link)}">{html_escape(doc_name)}</a></div>')
+            parts.append("<div>Passage_text:</div>")
+            parts.append(f"<div>{html_escape(passage)}</div>")
+            parts.append(f"<div class='sep'>{TEMPLATE_SEPARATOR}</div>")
+
+    # PID Texts (at the end)
+    if pid_text_map:
+        parts.append("<h2>PID Texts</h2>")
+        for k in sorted(pid_text_map.keys(), key=lambda x: int(re.sub(r'[^0-9]', '', x) or '0')):
+            v = pid_text_map[k]
+            parts.append(f"<div><strong>{html_escape(k)}</strong>: {html_escape(v)}</div>")
+        parts.append("<br>")
 
     parts.append("<br>")
     parts.append(f"<div class='sep'>{TEMPLATE_SEPARATOR}</div>")
