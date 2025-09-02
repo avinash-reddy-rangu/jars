@@ -4,30 +4,28 @@ import time
 import subprocess
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Tuple
 import urllib.parse as urlparse
 import zipfile
 import shutil
-import pandas as pd
+from openpyxl import load_workbook
 
 # --------------- CONFIG ---------------
-EXCEL_PATH = "sharepoint_folders.xlsx"   # your Excel file
-COLUMN_URL = "FolderURL"                 # column with SharePoint/OneDrive folder links
-COLUMN_QID = "QID"                       # column with QID values
-OUTPUT_BASE = Path("output")             # where extracted content goes
+EXCEL_PATH = "sharepoint_folders.xlsx"    # your Excel file
+COLUMN_URL_HEADER = "FolderURL"           # header name for the column that has hyperlinks
+COLUMN_QID_HEADER = "QID"                 # header name for QID
+OUTPUT_BASE = Path("output")              # where extracted content goes
 DOWNLOADS_DIR = Path.home() / "Downloads"
-PER_FOLDER_TIMEOUT = 600                 # seconds to wait for each folder ZIP
-STABLE_SECONDS = 4                       # how long a file size must be stable
-OPEN_IN_BACKGROUND = False               # don't bring Safari to front if True
-CLOSE_TAB_AFTER = True                   # try to close tab after triggering download
-RENAME_FILES_REPLACE_SPACES = True       # rename extracted files: " " -> "_"
+PER_FOLDER_TIMEOUT = 600                  # seconds to wait for each folder ZIP
+STABLE_SECONDS = 4                        # how long a file size must be stable
+OPEN_IN_BACKGROUND = False                # don't bring Safari to front if True
+CLOSE_TAB_AFTER = True                    # try to close tab after triggering download
+RENAME_FILES_REPLACE_SPACES = True        # rename extracted files/dirs: " " -> "_"
 # --------------------------------------
 
 
 def force_download_param(u: str) -> str:
-    """
-    For OneDrive/SharePoint folder links, appending download=1 often triggers a ZIP download.
-    """
+    """Append ?download=1 (or &download=1) unless already present."""
     try:
         parsed = urlparse.urlparse(u)
         q = urlparse.parse_qsl(parsed.query, keep_blank_values=True)
@@ -40,6 +38,7 @@ def force_download_param(u: str) -> str:
 
 
 def applescript_open_in_safari(url: str, activate: bool = True) -> None:
+    """Open URL in a new Safari tab using AppleScript."""
     script = f'''
     set theURL to "{url.replace('"', '%22')}"
     tell application "Safari"
@@ -55,6 +54,7 @@ def applescript_open_in_safari(url: str, activate: bool = True) -> None:
 
 
 def applescript_close_active_tab() -> None:
+    """Close the current tab in the front Safari window."""
     script = '''
     tell application "Safari"
         if (count of windows) > 0 then
@@ -84,10 +84,7 @@ def newest_path(dirpath: Path, after_ts: float) -> Optional[Path]:
 
 
 def looks_in_progress(p: Path) -> bool:
-    """
-    Safari shows in-progress downloads as a .download package (a directory).
-    Treat non-regular files or *.download as 'in progress'.
-    """
+    """Safari in-progress downloads appear as .download packages (directories)."""
     if p.suffix.lower() == ".download":
         return True
     if not p.is_file():
@@ -125,7 +122,6 @@ def unzip_to_target(zip_path: Path, target_dir: Path):
         zf.extractall(target_dir)
 
     if RENAME_FILES_REPLACE_SPACES:
-        # Walk and rename any files/dirs with spaces -> underscores
         for root, dirs, files in os.walk(target_dir, topdown=False):
             for name in files:
                 if " " in name:
@@ -142,10 +138,7 @@ def unzip_to_target(zip_path: Path, target_dir: Path):
 
 
 def process_folder(url: str, qid_value) -> tuple[bool, str]:
-    """
-    Open SharePoint/OneDrive folder link in Safari, trigger ZIP download, extract to QID folder.
-    """
-    # Normalize QID-based output folder
+    """Open folder link in Safari, trigger ZIP download, extract to QID folder."""
     qid_str = str(qid_value).strip()
     if not qid_str:
         return False, f"Empty QID for URL: {url}"
@@ -160,30 +153,23 @@ def process_folder(url: str, qid_value) -> tuple[bool, str]:
         return False, f"Safari open failed: {e}"
 
     deadline = start_ts + PER_FOLDER_TIMEOUT
-    candidate: Optional[Path] = None
 
-    # Wait for a new .zip file to finish downloading
     while time.time() < deadline:
         newest = newest_path(DOWNLOADS_DIR, after_ts=start_ts - 1)
         if newest is None:
             time.sleep(0.5)
             continue
 
-        # If it's an in-progress .download bundle, keep waiting
         if looks_in_progress(newest):
-            candidate = newest
             time.sleep(0.5)
             continue
 
-        # We want a ZIP file
+        # If we get a single file instead of a ZIP, still store it under the QID dir.
         if newest.suffix.lower() != ".zip":
-            # Not a zip—could be a single file if folder contained one item.
-            # Still handle it: move it under the QID folder.
             try:
                 target_dir.mkdir(parents=True, exist_ok=True)
                 dest = target_dir / newest.name
-                # Wait stable then move
-                wait_until_stable(newest, STABLE_SECONDS, timeout_s=int(deadline - time.time()))
+                wait_until_stable(newest, STABLE_SECONDS, timeout_s=int(max(1, deadline - time.time())))
                 shutil.move(str(newest), str(dest))
                 if RENAME_FILES_REPLACE_SPACES and " " in dest.name:
                     dest.rename(dest.with_name(dest.name.replace(" ", "_")))
@@ -197,12 +183,11 @@ def process_folder(url: str, qid_value) -> tuple[bool, str]:
                     except Exception: pass
                 return False, f"Non-zip download handling failed: {e}"
 
-        # ZIP: wait until size stable, then unzip
-        if wait_until_stable(newest, STABLE_SECONDS, timeout_s=int(deadline - time.time())):
+        # ZIP path: wait to stabilize then extract
+        if wait_until_stable(newest, STABLE_SECONDS, timeout_s=int(max(1, deadline - time.time()))):
             try:
                 unzip_to_target(newest, target_dir)
-                # Optionally remove the zip after extract
-                newest.unlink(missing_ok=True)
+                newest.unlink(missing_ok=True)  # remove zip after extraction
                 if CLOSE_TAB_AFTER:
                     try: applescript_close_active_tab()
                     except Exception: pass
@@ -221,20 +206,93 @@ def process_folder(url: str, qid_value) -> tuple[bool, str]:
     return False, f"Timeout waiting for folder ZIP from: {url}"
 
 
+def _normalize_header(s: Optional[str]) -> str:
+    return (s or "").strip().lower()
+
+
+def _looks_like_url(s: str) -> bool:
+    s = s.strip().lower()
+    return s.startswith("http://") or s.startswith("https://")
+
+
+def load_rows_from_excel(xlsx_path: str,
+                         url_header: str,
+                         qid_header: str) -> List[Tuple[str, str]]:
+    """
+    Reads (url, qid) pairs from an .xlsx file, preferring the cell's hyperlink target over
+    the displayed text. Returns list of (url, qid).
+    """
+    wb = load_workbook(filename=xlsx_path, data_only=True, read_only=False)
+    ws = wb.active  # or choose by name: wb["Sheet1"]
+
+    # Find header row (assume first non-empty row is header)
+    header_row_idx = None
+    for r in range(1, min(ws.max_row, 20) + 1):
+        row_vals = [ws.cell(row=r, column=c).value for c in range(1, ws.max_column + 1)]
+        if any(v is not None and str(v).strip() for v in row_vals):
+            header_row_idx = r
+            break
+    if header_row_idx is None:
+        return []
+
+    # Map headers to column indices
+    header_map = {}
+    for c in range(1, ws.max_column + 1):
+        v = ws.cell(row=header_row_idx, column=c).value
+        header_map[_normalize_header(str(v) if v is not None else "")] = c
+
+    url_col = header_map.get(_normalize_header(url_header))
+    qid_col = header_map.get(_normalize_header(qid_header))
+    if not url_col or not qid_col:
+        raise ValueError(
+            f"Could not find columns '{url_header}' and/or '{qid_header}'. "
+            f"Found headers: {list(header_map.keys())}"
+        )
+
+    rows: List[Tuple[str, str]] = []
+    for r in range(header_row_idx + 1, ws.max_row + 1):
+        url_cell = ws.cell(row=r, column=url_col)
+        qid_cell = ws.cell(row=r, column=qid_col)
+
+        # Extract QID
+        qid_val = qid_cell.value
+        if qid_val is None or str(qid_val).strip() == "":
+            continue
+
+        # Prefer the cell hyperlink target, if present
+        url_val = None
+        if url_cell.hyperlink and getattr(url_cell.hyperlink, "target", None):
+            url_val = url_cell.hyperlink.target
+        else:
+            # fallback to cell text if it looks like a URL
+            raw = url_cell.value
+            if isinstance(raw, str) and _looks_like_url(raw):
+                url_val = raw
+
+        if url_val:
+            rows.append((url_val.strip(), str(qid_val).strip()))
+
+    wb.close()
+    return rows
+
+
 def main():
     OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
-
     if not Path(EXCEL_PATH).exists():
         print(f"Excel not found: {EXCEL_PATH}")
         return
 
-    df = pd.read_excel(EXCEL_PATH)
-    for col in (COLUMN_URL, COLUMN_QID):
-        if col not in df.columns:
-            print(f"Column '{col}' not found. Available: {list(df.columns)}")
-            return
+    try:
+        rows = load_rows_from_excel(EXCEL_PATH, COLUMN_URL_HEADER, COLUMN_QID_HEADER)
+    except Exception as e:
+        print(f"Failed to read hyperlinks from Excel: {e}")
+        return
 
-    rows = df[[COLUMN_URL, COLUMN_QID]].dropna(subset=[COLUMN_URL, COLUMN_QID]).values.tolist()
+    if not rows:
+        print("No (URL, QID) pairs found. "
+              "Make sure your sheet has headers and hyperlinks in the URL column.")
+        return
+
     print(f"Found {len(rows)} rows with folder links and QIDs. Starting…")
 
     ok = 0
@@ -242,7 +300,7 @@ def main():
     for i, (url, qid) in enumerate(rows, 1):
         t0 = datetime.now().strftime("%H:%M:%S")
         print(f"[{i}/{len(rows)} {t0}] QID={qid} :: {url}")
-        success, msg = process_folder(str(url).strip(), qid)
+        success, msg = process_folder(url, qid)
         print("  ->", msg)
         ok += int(success)
         if not success:
