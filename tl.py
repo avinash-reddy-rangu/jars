@@ -66,3 +66,23 @@ else:
         # Locator disabled: keep original behavior
         document_names, document_plain_texts = self.get_document_datas(documents)
 
+# ADD: Answer Locator timeline post-process
+if getattr(config, "ASK_DOC_ENABLE_TIMELINE_DOC_LOCATOR", False):
+    # Build mappings and inject placeholders [[n]]
+    tl_pp = UkTimelinePostProcessTask(
+        xhtml_datas=getattr(self, "_xhtml_datas", []),    # may be [] if not built; that's OK
+        enable_locator=True,
+        enable_xpath_filter=getattr(config, "ASK_DOC_ENABLE_XPATH_FILTER", False),
+        placeholder_fmt=getattr(config, "ANSWER_LOCATOR_PLACEHOLDER", "[[{}]]"),
+        event_limit=getattr(config, "EVENT_LIMIT", 30),
+        stream_handler=self._stream_handler if hasattr(self, "_stream_handler") else None,
+        tracing_info=getattr(self, "_tracing_info", None),
+    )
+    # The post-processor accepts either:
+    #  - events that contain DocViewer anchors (from process_mark), OR
+    #  - events whose description includes (dXsY), resolvable via xhtml_datas
+    tl_result = tl_pp.process(consolidated_chronology)
+    consolidated_chronology = tl_result.get("events", consolidated_chronology)
+    # mappings are streamed by the post-processor; keep llm_answer construction below unchanged
+
+
