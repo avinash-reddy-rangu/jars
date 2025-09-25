@@ -46,3 +46,23 @@ def _build_xhtml_datas_from_download(self) -> list:
     #   fields: upload_identifier, plain_text(with dXsY), id_anchor_map, all_xpaths, origin_text
     return build_xpath_mapping(doc_xhtml_map)
 
+documents = self.get_task_output(AskDocTaskName.document_plain_text)
+if documents is None:
+    # (DBOTF retrieval path unchanged)
+    chunks = list(self.get_task_output(UkDBOTFTaskName.retrieval))
+    document_names, document_plain_texts = self.get_document_datas_chunk(chunks)
+else:
+    # Upload path
+    if getattr(config, "ASK_DOC_ENABLE_TIMELINE_DOC_LOCATOR", False):
+        # Try to build XHTML→(dXsY)
+        self._xhtml_datas = self._build_xhtml_datas_from_download()
+        if self._xhtml_datas:
+            document_names = [xd.upload_identifier for xd in self._xhtml_datas]
+            document_plain_texts = [xd.plain_text for xd in self._xhtml_datas]  # contains (dXsY)
+        else:
+            # Fall back to your existing plain-text path if XHTML isn’t available
+            document_names, document_plain_texts = self.get_document_datas(documents)
+    else:
+        # Locator disabled: keep original behavior
+        document_names, document_plain_texts = self.get_document_datas(documents)
+
