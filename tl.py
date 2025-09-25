@@ -23,3 +23,12 @@ xhtml_datas = to_xhtml_data_map(upload_identifier_to_xhtml)
 document_names = [xd.upload_identifier for xd in xhtml_datas]
 document_plain_texts = [xd.plain_text for xd in xhtml_datas]
 self._xhtml_datas = xhtml_datas  # save for post-process
+
+
+    from pydantic import BaseModel
+    class XhtmlData(BaseModel):
+        upload_identifier: str
+        plain_text: str           # contains (dXsY)
+        id_anchor_map: dict       # { "d0s15": {... anchors ...}, ... }
+        all_xpaths: dict          # optional, used for windowing/filtering
+        origin_text: str | None = None
